@@ -1,0 +1,108 @@
+### GitHub Actions workflow: context-updater.yml
+```yaml
+name: Context Documentation Updater
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - '**/*.swift'
+      - 'context/**'
+      - 'CLAUDE.md'
+  pull_request:
+    types: [opened, synchronize]
+  schedule:
+    - cron: '0 8 * * MON' # Weekly updates
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-context:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Extract Hardware Optimization Context
+        run: |
+          # Find Metal shader files
+          find . -name "*.metal" -exec echo "Metal Shader: {}" \; > context/hardware/metal-shaders-list.txt
+          
+          # Extract Neural Engine usage patterns
+          grep -r "MLComputeUnits.cpuAndNeuralEngine\|MLComputeUnits.all" \
+            --include="*.swift" . > context/hardware/neural-engine-usage.txt
+          
+          # Document performance critical paths
+          grep -r "// PERFORMANCE:\|@inlinable\|@inline(__always)" \
+            --include="*.swift" . > context/performance-critical.txt
+
+      - name: Generate Swift Documentation
+        run: |
+          # Install DocC
+          swift package update
+          
+          # Build documentation 
+          swift package generate-documentation \
+            --target NeuralNGenAI \
+            --output-path ./docs \
+            --transform-for-static-hosting \
+            --hosting-base-path neural-ngen-ai
+
+      - name: Update Architecture Context
+        run: |
+          cat > context/architecture/current-state.md << 'EOF'
+          # Neural NGen AI Architecture State
+          Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          ## Component Summary
+          - SwiftUI Views: $(find . -name "*View.swift" | wc -l)
+          - View Models: $(find . -name "*ViewModel.swift" | wc -l)
+          - Metal Shaders: $(find . -name "*.metal" | wc -l)
+          - Core ML Models: $(find . -name "*.mlmodel" -o -name "*.mlpackage" | wc -l)
+          
+          ## Hardware Utilization
+          - Neural Engine Calls: $(grep -r "MLComputeUnits" --include="*.swift" . | wc -l)
+          - Metal Pipelines: $(grep -r "MTLComputePipelineState" --include="*.swift" . | wc -l)
+          - Accelerate Framework: $(grep -r "import Accelerate" --include="*.swift" . | wc -l)
+          
+          ## Recent Performance Optimizations
+          $(git log --oneline --grep="perf\|optimize\|performance" -10)
+          EOF
+
+      - name: Generate Context Summary
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const execSync = require('child_process').execSync;
+            
+            // Analyze code complexity
+            const swiftFiles = execSync('find . -name "*.swift"').toString().split('\n').filter(Boolean);
+            
+            const contextUpdate = {
+              timestamp: new Date().toISOString(),
+              metrics: {
+                totalSwiftFiles: swiftFiles.length,
+                totalLines: execSync('find . -name "*.swift" -exec wc -l {} + | tail -1').toString().trim(),
+                metalShaders: execSync('find . -name "*.metal" | wc -l').toString().trim(),
+                coreMLModels: execSync('find . -name "*.mlmodel" -o -name "*.mlpackage" | wc -l').toString().trim()
+              },
+              recentChanges: execSync('git log --oneline -5').toString().trim(),
+              currentBranch: execSync('git branch --show-current').toString().trim()
+            };
+            
+            fs.writeFileSync('context/summary.json', JSON.stringify(contextUpdate, null, 2));
+
+      - name: Commit Context Updates
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 Auto-update AI context documentation"
+          file_pattern: "context/**"
